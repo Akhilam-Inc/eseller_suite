@@ -1,0 +1,75 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "AMZN-PAY-TYPE-.#####",
+ "creation": "2025-03-07 10:03:28.078921",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "product_details",
+  "credit_account",
+  "has_order_id",
+  "column_break_ofao",
+  "transaction_type",
+  "debit_account"
+ ],
+ "fields": [
+  {
+   "fieldname": "product_details",
+   "fieldtype": "Data",
+   "label": "Product Details"
+  },
+  {
+   "fieldname": "column_break_ofao",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "transaction_type",
+   "fieldtype": "Data",
+   "label": "Transaction Type"
+  },
+  {
+   "fieldname": "credit_account",
+   "fieldtype": "Link",
+   "label": "Credit Account",
+   "options": "Account"
+  },
+  {
+   "fieldname": "debit_account",
+   "fieldtype": "Link",
+   "label": "Debit Account",
+   "options": "Account"
+  },
+  {
+   "default": "0",
+   "fieldname": "has_order_id",
+   "fieldtype": "Check",
+   "label": "Has Order Id"
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2025-03-07 14:12:15.530602",
+ "modified_by": "Administrator",
+ "module": "eSeller Suite",
+ "name": "Amazon Payment Entry Type",
+ "naming_rule": "Expression (old style)",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}

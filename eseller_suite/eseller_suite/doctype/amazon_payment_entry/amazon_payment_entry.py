@@ -82,25 +82,113 @@ class AmazonPaymentEntry(Document):
 		if not is_blank_row and  payment_detail.get('transaction_type'):
 			self.append("payment_details", payment_detail)
 	
+	# @frappe.whitelist()
+	# def fetch_invoice_details(self):
+	# 	'''
+	# 		Method to get fetch Invoice and Customer details against each Amazon Order IDs
+	# 	'''
+	# 	has_changes = False
+	# 	total_pending_count = frappe.db.get_all('Amazon Payment Entry Item', { 'parent':self.name, 'ready_to_process':0 })
+	# 	i = 0
+	# 	for row in self.payment_details:
+	# 		if not row.ready_to_process:
+	# 			i += 1
+	# 			frappe.publish_realtime("fetch_invoice_details", dict(progress=i, total=len(total_pending_count)))
+	# 			if row.order_id and row.transaction_type in ['Order Payment', 'Amazon Easy Ship Charges', 'Fulfillment Fee Refund', 'Refund', 'Other']:
+	# 				invoice_details = get_invoice_details(row.order_id, is_return=0)
+	# 				return_invoice_details = None
+	# 				is_return = False
+	# 				if row.transaction_type in ['Fulfillment Fee Refund', 'Refund']:
+	# 					is_return = True
+	# 					return_invoice_details = get_invoice_details(row.order_id, is_return=1)
+	# 				if invoice_details.get('sales_invoice'):
+	# 					row.sales_invoice = invoice_details.get('sales_invoice')
+	# 				if invoice_details.get('customer'):
+	# 					row.customer = invoice_details.get('customer')
+	# 					if not is_return:
+	# 						row.ready_to_process = 1
+	# 					has_changes = True
+	# 				if return_invoice_details:
+	# 					if return_invoice_details.get('sales_invoice'):
+	# 						row.return_sales_invoice = return_invoice_details.get('sales_invoice')
+	# 						row.ready_to_process = 1
+	# 						has_changes = True
+	# 			elif row.transaction_type in ["Unavailable balance", "Previous statement's unavailable balance"]:
+	# 				row.ready_to_process = 1
+	# 				has_changes = True
+	# 			elif row.transaction_type == 'Service Fees':
+	# 				if row.product_details:
+	# 					service_type_details = get_amazon_service_type_details(row.product_details)
+	# 					if service_type_details.get('service_type'):
+	# 						row.amazon_service_type = service_type_details.get('service_type')
+	# 					if service_type_details.get('expense_account'):
+	# 						row.amazon_expense_account = service_type_details.get('expense_account')
+	# 						row.ready_to_process = 1
+	# 						has_changes = True
+	# 			if row.transaction_type == 'Order Payment' and row.total and row.order_id:
+	# 				if float(row.total) < 0:
+	# 					row.ready_to_process = 0
+	# 					replaced_jv = get_replaced_jv(row.order_id)
+	# 					if replaced_jv:
+	# 						row.journal_entry = replaced_jv
+	# 						row.ready_to_process = 1
+	# 						has_changes = True
+	# 			if row.transaction_type in ['Other', 'Inventory Reimbursement'] and row.product_details in ['FBA Inventory Reimbursement', 'FBA Reversed Reimbursement'] and row.order_id == '---':
+	# 				if float(row.total) < 0:
+	# 					inventory_reimbursement_account = frappe.db.get_single_value('eSeller Settings', 'inventory_reimbursement_account')
+	# 					if inventory_reimbursement_account:
+	# 						row.ready_to_process = 1
+	# 						row.amazon_expense_account = inventory_reimbursement_account
+	# 						has_changes = True
+	# 				elif float(row.total) > 0:
+	# 					inventory_reimbursement_income_account = frappe.db.get_single_value('eSeller Settings', 'inventory_reimbursement_income_account')
+	# 					if inventory_reimbursement_income_account:
+	# 						row.ready_to_process = 1
+	# 						row.amazon_expense_account = inventory_reimbursement_income_account
+	# 						has_changes = True
+	# 			if row.transaction_type == 'Inventory Reimbursement' and row.product_details == 'FBA Inventory Reimbursement' and row.order_id:
+	# 				if float(row.total) > 0:
+	# 					inventory_reimbursement_income_account = frappe.db.get_single_value('eSeller Settings', 'inventory_reimbursement_income_account')
+	# 					if inventory_reimbursement_income_account:
+	# 						row.ready_to_process = 1
+	# 						row.amazon_expense_account = inventory_reimbursement_income_account
+	# 						has_changes = True
+	# 			if row.transaction_type == 'Other' and row.product_details == 'Others' and row.order_id == '---':
+	# 				if float(row.total) < 0:
+	# 					other_expenses_account = frappe.db.get_single_value('eSeller Settings', 'other_expenses_account')
+	# 					if other_expenses_account:
+	# 						row.ready_to_process = 1
+	# 						row.amazon_expense_account = other_expenses_account
+	# 						has_changes = True
+	# 	if has_changes:
+	# 		self.save()
+	# 	return 1
+
 	@frappe.whitelist()
-	def fetch_invoice_details(self):
-		'''
-			Method to get fetch Invoice and Customer details against each Amazon Order IDs
-		'''
+    def fetch_invoice_details(self):
+		"""
+		Method to get fetch Invoice and Customer details against each Amazon Order IDs.
+		"""
 		has_changes = False
-		total_pending_count = frappe.db.get_all('Amazon Payment Entry Item', { 'parent':self.name, 'ready_to_process':0 })
+		total_pending_count = frappe.db.get_all('Amazon Payment Entry Item', {'parent': self.name, 'ready_to_process': 0})
+		
 		i = 0
 		for row in self.payment_details:
 			if not row.ready_to_process:
 				i += 1
 				frappe.publish_realtime("fetch_invoice_details", dict(progress=i, total=len(total_pending_count)))
-				if row.order_id and row.transaction_type in ['Order Payment', 'Amazon Easy Ship Charges', 'Fulfillment Fee Refund', 'Refund', 'Other']:
+
+				if row.order_id and row.transaction_type in [
+					'Order Payment', 'Amazon Easy Ship Charges', 'Fulfillment Fee Refund', 'Refund', 'Other'
+				]:
 					invoice_details = get_invoice_details(row.order_id, is_return=0)
 					return_invoice_details = None
 					is_return = False
+
 					if row.transaction_type in ['Fulfillment Fee Refund', 'Refund']:
 						is_return = True
 						return_invoice_details = get_invoice_details(row.order_id, is_return=1)
+
 					if invoice_details.get('sales_invoice'):
 						row.sales_invoice = invoice_details.get('sales_invoice')
 					if invoice_details.get('customer'):
@@ -108,24 +196,25 @@ class AmazonPaymentEntry(Document):
 						if not is_return:
 							row.ready_to_process = 1
 						has_changes = True
-					if return_invoice_details:
-						if return_invoice_details.get('sales_invoice'):
-							row.return_sales_invoice = return_invoice_details.get('sales_invoice')
-							row.ready_to_process = 1
-							has_changes = True
+					if return_invoice_details and return_invoice_details.get('sales_invoice'):
+						row.return_sales_invoice = return_invoice_details.get('sales_invoice')
+						row.ready_to_process = 1
+						has_changes = True
+
 				elif row.transaction_type in ["Unavailable balance", "Previous statement's unavailable balance"]:
 					row.ready_to_process = 1
 					has_changes = True
-				elif row.transaction_type == 'Service Fees':
-					if row.product_details:
-						service_type_details = get_amazon_service_type_details(row.product_details)
-						if service_type_details.get('service_type'):
-							row.amazon_service_type = service_type_details.get('service_type')
-						if service_type_details.get('expense_account'):
-							row.amazon_expense_account = service_type_details.get('expense_account')
-							row.ready_to_process = 1
-							has_changes = True
-				if row.transaction_type == 'Order Payment' and row.total and row.order_id:
+
+				elif row.transaction_type == 'Service Fees' and row.product_details:
+					service_type_details = get_amazon_service_type_details(row.product_details)
+					if service_type_details.get('service_type'):
+						row.amazon_service_type = service_type_details.get('service_type')
+					if service_type_details.get('expense_account'):
+						row.amazon_expense_account = service_type_details.get('expense_account')
+						row.ready_to_process = 1
+						has_changes = True
+
+				elif row.transaction_type == 'Order Payment' and row.total and row.order_id:
 					if float(row.total) < 0:
 						row.ready_to_process = 0
 						replaced_jv = get_replaced_jv(row.order_id)
@@ -133,37 +222,37 @@ class AmazonPaymentEntry(Document):
 							row.journal_entry = replaced_jv
 							row.ready_to_process = 1
 							has_changes = True
-				if row.transaction_type in ['Other', 'Inventory Reimbursement'] and row.product_details in ['FBA Inventory Reimbursement', 'FBA Reversed Reimbursement'] and row.order_id == '---':
-					if float(row.total) < 0:
-						inventory_reimbursement_account = frappe.db.get_single_value('eSeller Settings', 'inventory_reimbursement_account')
-						if inventory_reimbursement_account:
+
+				else:
+					amazon_payment_entry = frappe.get_value(
+						"Amazon Payment Entry Type",
+						{
+							"transaction_type": row.transaction_type,
+							"product_details": row.product_details,
+							"has_order_id": 1 if row.order_id != "---" else 0,
+						},
+						["credit_account", "debit_account"]
+					)
+
+					if amazon_payment_entry:
+						credit_account, debit_account = amazon_payment_entry
+
+						if float(row.total) < 0 and credit_account:
 							row.ready_to_process = 1
-							row.amazon_expense_account = inventory_reimbursement_account
+							row.amazon_expense_account = credit_account
 							has_changes = True
-					elif float(row.total) > 0:
-						inventory_reimbursement_income_account = frappe.db.get_single_value('eSeller Settings', 'inventory_reimbursement_income_account')
-						if inventory_reimbursement_income_account:
+							
+						elif float(row.total) > 0 and debit_account:
 							row.ready_to_process = 1
-							row.amazon_expense_account = inventory_reimbursement_income_account
+							row.amazon_expense_account = debit_account
 							has_changes = True
-				if row.transaction_type == 'Inventory Reimbursement' and row.product_details == 'FBA Inventory Reimbursement' and row.order_id:
-					if float(row.total) > 0:
-						inventory_reimbursement_income_account = frappe.db.get_single_value('eSeller Settings', 'inventory_reimbursement_income_account')
-						if inventory_reimbursement_income_account:
-							row.ready_to_process = 1
-							row.amazon_expense_account = inventory_reimbursement_income_account
-							has_changes = True
-				if row.transaction_type == 'Other' and row.product_details == 'Others' and row.order_id == '---':
-					if float(row.total) < 0:
-						other_expenses_account = frappe.db.get_single_value('eSeller Settings', 'other_expenses_account')
-						if other_expenses_account:
-							row.ready_to_process = 1
-							row.amazon_expense_account = other_expenses_account
-							has_changes = True
+
 		if has_changes:
 			self.save()
+		
 		return 1
-	
+
+
 	@frappe.whitelist()
 	def create_journal_entry(self):
 		'''
