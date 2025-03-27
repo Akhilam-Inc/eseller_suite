@@ -479,11 +479,11 @@ class AmazonRepository:
 				seller_sku = ''
 				for refund_event in refund_event_list:
 					if refund_event:
-
-						charges_and_fees = {"posting_date": "", "items":[], "charges": [], "fees": [], "tds":[], "amazon_order_amount":amazon_order_amount, "order_date":order_date}
-
-						charges_and_fees["posting_date"] = format_date_time_to_ist(refund_event.get("PostedDate"))
 						for refund_item in refund_event.get("ShipmentItemAdjustmentList", []):
+
+							charges_and_fees = {"posting_date": "", "items":[], "charges": [], "fees": [], "tds":[], "amazon_order_amount":amazon_order_amount, "order_date":order_date}
+							charges_and_fees["posting_date"] = format_date_time_to_ist(refund_event.get("PostedDate"))
+
 							charges = refund_item.get("ItemChargeAdjustmentList", [])
 							fees = refund_item.get("ItemFeeAdjustmentList", [])
 							promotions = refund_item.get("PromotionAdjustmentList", [])
@@ -545,7 +545,7 @@ class AmazonRepository:
 										}
 									)
 
-						refund_events.append(charges_and_fees)			
+							refund_events.append(charges_and_fees)			
 
 				for service_fee in service_fee_event_list:
 					if service_fee:
