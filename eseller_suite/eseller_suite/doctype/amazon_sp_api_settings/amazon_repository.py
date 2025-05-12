@@ -894,7 +894,22 @@ class AmazonRepository:
 					"Unfulfillable",
 				]
 
-				if order.get("OrderStatus") in order_statuses and len(so.taxes):
+				order_status_valid = order.get("OrderStatus") in order_statuses
+				has_taxes = len(so.taxes) > 0
+				temp_transfer_required = self.amz_setting.temporary_stock_transfer_required
+
+				transfer_exists = frappe.db.exists("Stock Entry", {
+					"name": so.temporary_stock_tranfer_id,
+					"docstatus": 1
+				}) if temp_transfer_required else True
+
+				print("filters", {"name": so.temporary_stock_tranfer_id, "docstatus": 1})
+
+				print("Exist Check: ", transfer_exists)
+
+
+				print("SO: ", so.name, order_status_valid, has_taxes, transfer_exists)
+				if order_status_valid and has_taxes and transfer_exists:
 					try:
 						so.submit()
 					except Exception as e:

@@ -62,7 +62,7 @@ class SalesOrderOverride(SalesOrder):
 				temp_stock_transfer_doc = frappe.get_doc("Stock Entry", self.temporary_stock_tranfer_id)
 				temp_stock_transfer_doc.cancel()
 
-	def before_insert(self):
+	def after_insert(self):
 		amz_setting = frappe.get_last_doc("Amazon SP API Settings", {"is_active":1})
 		if amz_setting.temporary_stock_transfer_required and self.amazon_order_id and self.amazon_order_status != "Canceled":
 			self.create_temporary_stock_transfer()
@@ -88,8 +88,17 @@ class SalesOrderOverride(SalesOrder):
 				"qty": item.qty
 			})
 		temp_stock_entry.insert(ignore_permissions=True)
-		temp_stock_entry.submit()
 		self.temporary_stock_tranfer_id = temp_stock_entry.name
+		self.save(ignore_permissions=True)
+		frappe.db.savepoint("before_temp_stock_entry_submit")
+		try:
+			temp_stock_entry.submit()
+		except Exception as e:
+			frappe.db.rollback(save_point="before_temp_stock_entry_submit")
+			failed_sync_record = frappe.new_doc('Amazon Failed Sync Record')
+			failed_sync_record.amazon_order_id = self.amazon_order_id
+			failed_sync_record.remarks = "Failed to create temporary stock entry\n" + str(e)
+			failed_sync_record.save(ignore_permissions=True)
 
 @frappe.whitelist()
 def make_sales_invoice(source_name, target_doc=None, ignore_permissions=False):
