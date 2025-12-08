@@ -9,7 +9,7 @@ import urllib
 import dateutil
 import frappe
 from frappe import _
-from datetime import datetime
+from datetime import datetime,date, timezone
 from eseller_suite.eseller_suite.utils import format_date_time_to_ist
 
 from eseller_suite.eseller_suite.doctype.amazon_sp_api_settings.amazon_sp_api import (
@@ -46,14 +46,25 @@ class AmazonRepository:
 	def call_sp_api_method(self, sp_api_method, **kwargs) -> dict:
 		errors = {}
 		max_retries = self.amz_setting.max_retry_limit
+		enable_log = getattr(self.amz_setting, "enable_log", 0)
 
 		for x in range(max_retries):
 			try:
 				result = sp_api_method(**kwargs)
-				return result.get("payload")
+				payload = result.get("payload")
+				
+				# Log successful API call if logging is enabled
+				if enable_log:
+					self._create_eseller_log(sp_api_method, kwargs, result, None)
+				
+				return payload
 			except SPAPIError as e:
 				if e.error not in errors:
 					errors[e.error] = e.error_description
+
+				# Log failed API call if logging is enabled
+				if enable_log:
+					self._create_eseller_log(sp_api_method, kwargs, None, e)
 
 				time.sleep(1)
 				continue
@@ -71,6 +82,78 @@ class AmazonRepository:
 		frappe.throw(
 			_("Scheduled sync has been temporarily disabled because maximum retries have been exceeded!")
 		)
+	
+	def _mask_sensitive_headers(self, headers):
+		"""Mask sensitive header values for logging"""
+		if not headers:
+			return headers
+		
+		masked_headers = {}
+		sensitive_keys = ("x-amz-access-token", "authorization", "x-amz-security-token")
+		
+		for key, value in headers.items():
+			key_lower = key.lower()
+			if any(sensitive_key in key_lower for sensitive_key in sensitive_keys):
+				# Show first 20 chars and last 10 chars, mask the rest
+				if isinstance(value, str) and len(value) > 30:
+					masked_headers[key] = f"{value[:20]}...{value[-10:]}"
+				else:
+					masked_headers[key] = "***MASKED***"
+			else:
+				masked_headers[key] = value
+		
+		return masked_headers
+	
+	def _create_eseller_log(self, sp_api_method, kwargs, result, error):
+		"""Create eSeller Log entry for API call"""
+		try:
+			# Get the SPAPI instance from the bound method
+			sp_api_instance = getattr(sp_api_method, "__self__", None)
+			request_details = getattr(sp_api_instance, "last_request_details", None) if sp_api_instance else None
+			
+			# Prepare log data
+			api_method_name = sp_api_method.__name__
+			api_url = request_details.get("url") if request_details else ""
+			status_code = request_details.get("status_code") if request_details else ""
+			headers = request_details.get("headers") if request_details else {}
+			# Mask sensitive headers
+			masked_headers = self._mask_sensitive_headers(headers)
+			payload_data = request_details.get("data") or request_details.get("params") if request_details else kwargs
+			
+			# Prepare response data
+			if error:
+				response_data = {
+					"error": getattr(error, "error", str(error)),
+					"error_description": getattr(error, "error_description", "")
+				}
+			else:
+				response_data = result if result else {}
+			
+			# Create log entry
+			log_doc = frappe.new_doc("eSeller Log")
+			log_doc.api_method = api_method_name
+			log_doc.api_url = api_url
+			log_doc.status_code = status_code
+			log_doc.header = frappe.as_json(masked_headers) if masked_headers else ""
+			log_doc.payload = frappe.as_json(payload_data) if payload_data else ""
+			log_doc.response = frappe.as_json(response_data) if response_data else ""
+			log_doc.reference_doctype = "Amazon SP API Settings"
+			log_doc.reference_docname = self.amz_setting.name
+			
+			if error:
+				error_msg = getattr(error, "error", str(error))
+				error_desc = getattr(error, "error_description", "")
+				log_doc.message = f"Error: {error_msg} - {error_desc}" if error_desc else f"Error: {error_msg}"
+			else:
+				log_doc.message = "API call successful"
+			
+			log_doc.insert(ignore_permissions=True)
+		except Exception as e:
+			# Don't fail the main operation if logging fails
+			frappe.log_error(
+				"eSeller Log Creation Error",
+				f"Failed to create eSeller Log: {str(e)}"
+			)
 
 	def get_finances_instance(self) -> Finances:
 		return Finances(**self.instance_params)
@@ -287,7 +370,9 @@ class AmazonRepository:
 			item_price.insert()
 
 		catalog_items = self.get_catalog_items_instance()
-		amazon_item = catalog_items.get_catalog_item(order_item["ASIN"]).get("payload", None)
+		amazon_item = self.call_sp_api_method(
+			sp_api_method=catalog_items.get_catalog_item, asin=order_item["ASIN"]
+		) or None
   
 		if not amazon_item:
 			frappe.log_error("No Amazon Item found for ASIN: {0}. For Order: {1}".format(order_item["ASIN"], order_id))
@@ -984,34 +1069,38 @@ class AmazonRepository:
 
 	def get_orders(self, last_updated_after, sync_selected_date_only=0) -> list:
 		orders = self.get_orders_instance()
+		
 		order_statuses = [
 			"Shipped",
 			"InvoiceUnconfirmed",
 			"Canceled",
 			"Unfulfillable",
 		]
-		fulfillment_channels = ["FBA", "SellerFulfilled"]
-		if sync_selected_date_only:
-			last_updated_before = add_days(getdate(last_updated_after), 1).strftime( "%Y-%m-%d")
-			orders_payload = self.call_sp_api_method(
-				sp_api_method=orders.get_orders,
-				last_updated_after=last_updated_after,
-				last_updated_before=last_updated_before,
-				order_statuses=order_statuses,
-				fulfillment_channels=fulfillment_channels,
-				max_results=50,
-			)
-		else:
-			orders_payload = self.call_sp_api_method(
-				sp_api_method=orders.get_orders,
-				last_updated_after=last_updated_after,
-				order_statuses=order_statuses,
-				fulfillment_channels=fulfillment_channels,
-				max_results=50,
-			)
-
+		fulfillment_channels = ["AFN", "MFN"]
+		orders_payload = None
+		try:
+			if sync_selected_date_only:
+				last_updated_before = add_days(getdate(last_updated_after), 1).strftime( "%Y-%m-%d")
+				orders_payload = self.call_sp_api_method(
+					sp_api_method=orders.get_orders,
+					last_updated_after=last_updated_after,
+					last_updated_before=last_updated_before,
+					order_statuses=order_statuses,
+					fulfillment_channels=fulfillment_channels,
+					max_results=50,
+				)
+			else:
+				orders_payload = self.call_sp_api_method(
+					sp_api_method=orders.get_orders,
+					last_updated_after=to_iso_z(last_updated_after),
+					order_statuses=order_statuses,
+					fulfillment_channels=fulfillment_channels,
+					max_results=50,
+				)
+		except Exception as e:
+			frappe.log_error(title = "GET Orders" , message = frappe.get_traceback(e))
 		sales_orders = []
-
+		frappe.log_error(title = "Orders" , message = f"{orders_payload}")
 		while True:
 			if orders_payload:
 				orders_list = orders_payload.get("Orders")
@@ -1027,6 +1116,8 @@ class AmazonRepository:
 				orders_payload = self.call_sp_api_method(
 					sp_api_method=orders.get_orders, last_updated_after=last_updated_after, next_token=next_token,
 				)
+			else:
+				break
 		frappe.enqueue("eseller_suite.eseller_suite.doctype.amazon_sp_api_settings.amazon_sp_api_settings.enq_si_submit", sales_orders=sales_orders)
 		return sales_orders
 
@@ -1049,6 +1140,21 @@ class AmazonRepository:
 
 	def get_catalog_items_instance(self) -> CatalogItems:
 		return CatalogItems(**self.instance_params)
+
+def to_iso_z(d):
+    # Accept either date (YYYY-MM-DD) or datetime
+    if isinstance(d, str):
+        # If it's already an ISO string with time, assume caller passed correct value
+        if "T" in d:
+            return d
+        # assume YYYY-MM-DD
+        d = datetime.strptime(d, "%Y-%m-%d").date()
+    if isinstance(d, date) and not isinstance(d, datetime):
+        # midnight UTC
+        dt = datetime(d.year, d.month, d.day, 0, 0, 0, tzinfo=timezone.utc)
+    else:
+        dt = d.astimezone(timezone.utc)
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 def get_orders(amz_setting_name, last_updated_after, sync_selected_date_only=0) -> list:
 	ar = AmazonRepository(amz_setting_name)
