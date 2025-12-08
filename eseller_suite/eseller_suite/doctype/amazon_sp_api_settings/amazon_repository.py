@@ -68,6 +68,23 @@ class AmazonRepository:
 
 				time.sleep(1)
 				continue
+			except Exception as e:
+				# Catch all other exceptions (network errors, timeouts, etc.)
+				error_key = type(e).__name__
+				if error_key not in errors:
+					errors[error_key] = str(e)
+
+				# Log failed API call if logging is enabled
+				if enable_log:
+					# Create a wrapper error object for non-SPAPIError exceptions
+					error_obj = type('GenericError', (object,), {
+						'error': error_key,
+						'error_description': str(e)
+					})()
+					self._create_eseller_log(sp_api_method, kwargs, None, error_obj)
+
+				time.sleep(1)
+				continue
 
 		for error in errors:
 			msg = f"<b>Error:</b> {error}<br/><b>Error Description:</b> {errors.get(error)}"
@@ -122,10 +139,14 @@ class AmazonRepository:
 			
 			# Prepare response data
 			if error:
-				response_data = {
-					"error": getattr(error, "error", str(error)),
-					"error_description": getattr(error, "error_description", "")
-				}
+				# Use response from request_details if available (for exceptions from make_request)
+				if request_details and request_details.get("response"):
+					response_data = request_details.get("response")
+				else:
+					response_data = {
+						"error": getattr(error, "error", str(error)),
+						"error_description": getattr(error, "error_description", "")
+					}
 			else:
 				response_data = result if result else {}
 			
@@ -143,7 +164,16 @@ class AmazonRepository:
 			if error:
 				error_msg = getattr(error, "error", str(error))
 				error_desc = getattr(error, "error_description", "")
-				log_doc.message = f"Error: {error_msg} - {error_desc}" if error_desc else f"Error: {error_msg}"
+				# Include full error details in message
+				if request_details and request_details.get("response"):
+					error_response = request_details.get("response")
+					if isinstance(error_response, dict):
+						error_text = frappe.as_json(error_response)
+					else:
+						error_text = str(error_response)
+					log_doc.message = f"Error: {error_msg} - {error_desc}\n\nResponse: {error_text}"
+				else:
+					log_doc.message = f"Error: {error_msg} - {error_desc}" if error_desc else f"Error: {error_msg}"
 			else:
 				log_doc.message = "API call successful"
 			
