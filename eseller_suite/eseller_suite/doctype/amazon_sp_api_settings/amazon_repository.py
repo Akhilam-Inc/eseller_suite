@@ -43,6 +43,30 @@ class AmazonRepository:
 		else:
 			return [input]
 
+	def enhance_hsn_error_with_items(self, error_message, doc):
+		"""Enhance HSN/SAC validation errors with item information"""
+		if not doc or not hasattr(doc, 'items'):
+			return error_message
+		
+		# Check if error is related to HSN/SAC
+		hsn_keywords = ["HSN/SAC", "HSN", "SAC", "hsn_code", "gst_hsn_code"]
+		if not any(keyword.lower() in str(error_message).lower() for keyword in hsn_keywords):
+			return error_message
+		
+		# Find items without HSN code
+		items_without_hsn = []
+		for item in doc.items:
+			if not item.get("gst_hsn_code"):
+				item_info = f"Row {item.idx}: {item.get('item_code', 'Unknown')} ({item.get('item_name', 'N/A')})"
+				items_without_hsn.append(item_info)
+		
+		if items_without_hsn:
+			items_list = "\n".join(items_without_hsn)
+			enhanced_message = f"{error_message}\n\nItems requiring HSN/SAC Code:\n{items_list}"
+			return enhanced_message
+		
+		return error_message
+
 	def call_sp_api_method(self, sp_api_method, **kwargs) -> dict:
 		errors = {}
 		max_retries = self.amz_setting.max_retry_limit
@@ -1180,9 +1204,12 @@ class AmazonRepository:
 						message=f"Order ID: {order_id}, Return Invoice: {return_si.name}, Items: {len(return_si.items)}"
 					)
 				except Exception as e:
+					error_msg = str(e)
+					# Enhance HSN/SAC errors with item information
+					enhanced_error = self.enhance_hsn_error_with_items(error_msg, return_si)
 					frappe.log_error(
 						title="Error creating Return Invoice",
-						message=f"Order ID: {order_id or 'None'}, Error: {str(e)}, Traceback: {frappe.get_traceback()}"
+						message=f"Order ID: {order_id or 'None'}, Error: {enhanced_error}, Traceback: {frappe.get_traceback()}"
 					)
 			else:
 				frappe.log_error(
@@ -1371,7 +1398,13 @@ class AmazonRepository:
 				try:
 					so.save(ignore_permissions=True)
 				except Exception as e:
-					frappe.log_error("Error saving Sales Order for Order {0}".format(so.amazon_order_id), e, "Sales Order")
+					error_msg = str(e)
+					# Enhance HSN/SAC errors with item information
+					enhanced_error = self.enhance_hsn_error_with_items(error_msg, so)
+					frappe.log_error(
+						title="Error saving Sales Order for Order {0}".format(so.amazon_order_id),
+						message=f"Error: {enhanced_error}\nTraceback: {frappe.get_traceback()}",
+					)
 
 				order_statuses = [
 					"Shipped",
@@ -1392,7 +1425,13 @@ class AmazonRepository:
 					try:
 						so.submit()
 					except Exception as e:
-						frappe.log_error("Error submitting Sales Order for Order {0}".format(so.amazon_order_id), e, "Sales Order")
+						error_msg = str(e)
+						# Enhance HSN/SAC errors with item information
+						enhanced_error = self.enhance_hsn_error_with_items(error_msg, so)
+						frappe.log_error(
+							title="Error submitting Sales Order for Order {0}".format(so.amazon_order_id),
+							message=f"Error: {enhanced_error}\nTraceback: {frappe.get_traceback()}",
+						)
 			elif not frappe.db.exists("Amazon Failed Sync Record", {"amazon_order_id":order_id}):
 				remarks = 'Failed to create Sales Order for {0}. Sales Order grand Total = {1}'.format(order_id, so.grand_total)
 				failed_sync_record = frappe.new_doc('Amazon Failed Sync Record')

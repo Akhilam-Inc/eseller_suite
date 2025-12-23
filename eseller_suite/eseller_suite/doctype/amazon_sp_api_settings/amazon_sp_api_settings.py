@@ -11,6 +11,31 @@ from frappe.utils import add_days, getdate, now_datetime, today, get_date_str
 import pytz
 
 
+def enhance_hsn_error_with_items(error_message, doc):
+	"""Enhance HSN/SAC validation errors with item information"""
+	if not doc or not hasattr(doc, 'items'):
+		return error_message
+	
+	# Check if error is related to HSN/SAC
+	hsn_keywords = ["HSN/SAC", "HSN", "SAC", "hsn_code", "gst_hsn_code"]
+	if not any(keyword.lower() in str(error_message).lower() for keyword in hsn_keywords):
+		return error_message
+	
+	# Find items without HSN code
+	items_without_hsn = []
+	for item in doc.items:
+		if not item.get("gst_hsn_code"):
+			item_info = f"Row {item.idx}: {item.get('item_code', 'Unknown')} ({item.get('item_name', 'N/A')})"
+			items_without_hsn.append(item_info)
+	
+	if items_without_hsn:
+		items_list = "\n".join(items_without_hsn)
+		enhanced_message = f"{error_message}\n\nItems requiring HSN/SAC Code:\n{items_list}"
+		return enhanced_message
+	
+	return error_message
+
+
 class AmazonSPAPISettings(Document):
 	def validate(self):
 		self.validate_after_date()
@@ -122,15 +147,19 @@ def enq_si_submit(sales_orders = []):
 		sales_invoices = frappe.db.get_all("Sales Invoice Item", {"sales_order":["in", sales_orders]}, pluck="parent")
 	for sales_invoice_name in sales_invoices:
 		frappe.db.savepoint("before_testing_si_submit")
+		sales_invoice = None
 		try:
 			sales_invoice = frappe.get_doc("Sales Invoice", sales_invoice_name)
 			sales_invoice.submit()
 		except Exception as e:
 			frappe.db.rollback(save_point="before_testing_si_submit")
 			# Log error and skip this invoice, continue with next invoice
+			error_msg = str(e)
+			# Enhance HSN/SAC errors with item information
+			enhanced_error = enhance_hsn_error_with_items(error_msg, sales_invoice)
 			frappe.log_error(
 				title=f"Failed to submit Sales Invoice: {sales_invoice_name}",
-				message=f"Invoice: {sales_invoice_name}\nError: {str(e)}\nTraceback: {frappe.get_traceback()}",
+				message=f"Invoice: {sales_invoice_name}\nError: {enhanced_error}\nTraceback: {frappe.get_traceback()}",
 			)
 			# Create failed invoice record if it doesn't exist
 			if not frappe.db.exists("Amazon Failed Invoice Record", {"invoice_id": sales_invoice_name}):
