@@ -26,6 +26,7 @@
   "customer_group",
   "territory",
   "customer_type",
+  "amazon_customer",
   "market_place_account_group",
   "mfn_postage_fee_account_head",
   "section_break_3",
@@ -280,10 +281,16 @@
    "fieldname": "enable_log",
    "fieldtype": "Check",
    "label": "Enable Log"
+  },
+  {
+   "fieldname": "amazon_customer",
+   "fieldtype": "Link",
+   "label": "Amazon Customer",
+   "options": "Customer"
   }
  ],
  "links": [],
- "modified": "2025-12-09 02:03:59.229460",
+ "modified": "2025-12-22 11:09:58.622357",
  "modified_by": "Administrator",
  "module": "eSeller Suite",
  "name": "Amazon SP API Settings",

@@ -1,6 +1,7 @@
 {
  "actions": [],
  "allow_rename": 1,
+ "autoname": "ESL-.MM.-.DD.-.####",
  "creation": "2025-12-09 01:51:54.290476",
  "default_view": "List",
  "doctype": "DocType",
@@ -44,7 +45,7 @@
   },
   {
    "fieldname": "api_url",
-   "fieldtype": "Data",
+   "fieldtype": "Code",
    "label": "API URL",
    "read_only": 1
   },
@@ -85,10 +86,11 @@
  ],
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2025-12-09 01:51:54.290476",
+ "modified": "2025-12-10 14:26:15.567203",
  "modified_by": "Administrator",
  "module": "eSeller Suite",
  "name": "eSeller Log",
+ "naming_rule": "Expression (old style)",
  "owner": "Administrator",
  "permissions": [
   {

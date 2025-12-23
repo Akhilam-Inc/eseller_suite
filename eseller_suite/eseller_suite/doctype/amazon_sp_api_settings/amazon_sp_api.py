@@ -121,14 +121,14 @@ class SPAPI(object):
 		except Exception:
 			sent_body, sent_headers = None, None
 
-		frappe.log_error(
-			title="Amazon Token Debug",
-			message=f"Sent headers: {sent_headers}\nSent body: {sent_body}\nResp status: {response.status_code}\nResp body: {response.text}"
-		)
+		# frappe.log_error(
+		# 	title="Amazon Token Debug",
+		# 	message=f"Sent headers: {sent_headers}\nSent body: {sent_body}\nResp status: {response.status_code}\nResp body: {response.text}"
+		# )
 
 		result = response.json()
 		if response.status_code == 200:
-			frappe.log_error(title="Amazon SP Token", message=f"{result}")
+			# frappe.log_error(title="Amazon SP Token", message=f"{result}")
 			return result.get("access_token")
 
 		exception = SPAPIError(error=result.get("error"), error_description=result.get("error_description"))

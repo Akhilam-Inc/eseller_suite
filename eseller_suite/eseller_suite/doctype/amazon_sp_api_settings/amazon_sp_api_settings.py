@@ -120,12 +120,29 @@ def enq_si_submit(sales_orders = []):
 		sales_invoices = frappe.db.get_all("Sales Invoice", {"docstatus":0, "amazon_order_id":["is", "set"]}, pluck="name")
 	else:
 		sales_invoices = frappe.db.get_all("Sales Invoice Item", {"sales_order":["in", sales_orders]}, pluck="parent")
-	for sales_invoice in sales_invoices:
-		sales_invoice = frappe.get_doc("Sales Invoice", sales_invoice)
+	for sales_invoice_name in sales_invoices:
 		frappe.db.savepoint("before_testing_si_submit")
 		try:
+			sales_invoice = frappe.get_doc("Sales Invoice", sales_invoice_name)
 			sales_invoice.submit()
 		except Exception as e:
 			frappe.db.rollback(save_point="before_testing_si_submit")
-			if not frappe.db.exists("Amazon Failed Invoice Record", {"invoice_id":sales_invoice.name}):
-				frappe.get_doc({"doctype":"Amazon Failed Invoice Record", "invoice_id":sales_invoice.name, "error":e}).insert()
+			# Log error and skip this invoice, continue with next invoice
+			frappe.log_error(
+				title=f"Failed to submit Sales Invoice: {sales_invoice_name}",
+				message=f"Invoice: {sales_invoice_name}\nError: {str(e)}\nTraceback: {frappe.get_traceback()}",
+			)
+			# Create failed invoice record if it doesn't exist
+			if not frappe.db.exists("Amazon Failed Invoice Record", {"invoice_id": sales_invoice_name}):
+				try:
+					frappe.get_doc({
+						"doctype": "Amazon Failed Invoice Record",
+						"invoice_id": sales_invoice_name,
+						"error": str(e)
+					}).insert(ignore_permissions=True)
+				except Exception as save_error:
+					frappe.log_error(
+						title=f"Failed to create Amazon Failed Invoice Record for {sales_invoice_name}",
+						message=str(save_error)
+					)
+			continue

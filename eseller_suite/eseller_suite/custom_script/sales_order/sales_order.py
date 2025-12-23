@@ -3,7 +3,7 @@ from erpnext.accounts.party import get_party_account
 from erpnext.selling.doctype.sales_order.sales_order import SalesOrder
 from erpnext.setup.doctype.item_group.item_group import get_item_group_defaults
 from erpnext.stock.doctype.item.item import get_item_defaults
-from erpnext.stock.stock_ledger import get_stock_balance
+from erpnext.stock.utils import get_stock_balance
 from frappe import _
 from frappe.contacts.doctype.address.address import get_company_address
 from frappe.model.mapper import get_mapped_doc
