@@ -1041,26 +1041,134 @@ class AmazonRepository:
 					for fee in refund.get("fees", []):
 						return_si.append("taxes", fee)
 
+					for tds in refund.get("tds", []):
+						return_si.append("taxes", tds)
+
 					return_si.disable_rounded_total = 1
 					return_si.update_outstanding_for_self = 1
 					return_si.update_billed_amount_in_sales_order = 1
 				else:
-					frappe.log_error(
-						title="Return Invoice - No items processed",
-						message=f"Order ID: {order_id}, Refund: {frappe.as_json(refund)}, Items: {frappe.as_json(refund.get('items', []))}"
-					)
-					failed_sync_record = frappe.new_doc('Amazon Failed Sync Record')
-					failed_sync_record.amazon_order_id = order_id
-					failed_sync_record.remarks = f'Failed to create return Sales Invoice, No items could be processed. Sales Order ID: {so_id}, Refund items: {len(refund.get("items", []))}'
-					failed_sync_record.payload = frappe.as_json(refund)
-					if refund.get("posting_date"):
-						failed_sync_record.posting_date = dateutil.parser.parse(refund.get("posting_date")).strftime("%Y-%m-%d")
-					if refund.get("order_date"):
-						failed_sync_record.amazon_order_date = dateutil.parser.parse(refund.get("order_date")).strftime("%Y-%m-%d")
-					if refund.get("amazon_order_amount"):
-						failed_sync_record.amazon_order_amount = refund.get("amazon_order_amount")
-					failed_sync_record.save(ignore_permissions=True)
-					continue
+					# Try to extract item names from TDS descriptions before failing
+					tds_entries = refund.get("tds", [])
+					if tds_entries:
+						import re
+						# Extract item names from TDS descriptions (format: "ItemTDS for {item_name}")
+						item_names_from_tds = set()
+						for tds_entry in tds_entries:
+							description = tds_entry.get("description", "")
+							# Match pattern: "ItemTDS for {item_name}" or "{tds_type} for {item_name}"
+							match = re.search(r'for\s+(.+)$', description, re.IGNORECASE)
+							if match:
+								item_name = match.group(1).strip()
+								if item_name:
+									item_names_from_tds.add(item_name)
+						
+						# Try to find items using extracted names
+						if item_names_from_tds:
+							for item_name_from_tds in item_names_from_tds:
+								# Try to find item by item_name, item_code, or amazon_item_code
+								item_code = None
+								
+								# First try by item_name
+								item_code = frappe.db.get_value("Item", {"item_name": item_name_from_tds}, "name")
+								
+								# If not found, try by item_code
+								if not item_code:
+									item_code = frappe.db.get_value("Item", {"item_code": item_name_from_tds}, "name")
+								
+								# If not found, try by amazon_item_code (ASIN)
+								if not item_code:
+									item_code = frappe.db.get_value("Item", {"amazon_item_code": item_name_from_tds}, "name")
+								
+								if item_code:
+									# Get actual item if it's a variant
+									actual_item = frappe.db.get_value("Item", item_code, "actual_item")
+									if not actual_item:
+										actual_item = item_code
+									
+									# Check if item exists in original invoice
+									if frappe.db.exists("Sales Invoice Item", {"parent": si, "item_code": actual_item}):
+										# Get original item details
+										original_item = frappe.db.get_value(
+											"Sales Invoice Item",
+											{"parent": si, "item_code": actual_item},
+											["qty", "rate", "name"],
+											as_dict=True
+										)
+										
+										if original_item:
+											# Calculate quantity from TDS entries for this item
+											tds_total_amount = sum(
+												float(tds.get("tax_amount", 0))
+												for tds in tds_entries
+												if item_name_from_tds in tds.get("description", "")
+											)
+											
+											# Estimate qty based on TDS amount (use original rate if available)
+											original_rate = original_item.get("rate", 0) or 1
+											estimated_qty = abs(tds_total_amount) / original_rate if original_rate > 0 else 1
+											
+											# Check returned quantity
+											returned_qty = 0
+											for returned_si in existing_returns:
+												existing_returned_qty = frappe.db.get_value(
+													"Sales Invoice Item",
+													{"parent": returned_si, "item_code": actual_item},
+													"qty"
+												) or 0
+												returned_qty += abs(existing_returned_qty)
+											
+											original_qty = original_item.get("qty", 0)
+											
+											if original_qty >= (returned_qty + estimated_qty):
+												return_si.append("items", {
+													"item_code": actual_item,
+													"qty": -1 * estimated_qty,
+													"rate": original_rate,
+													"sales_order": so_id,
+													"sales_invoice_item": original_item.get("name")
+												})
+												frappe.db.set_value("Sales Invoice Item", {"parent": si, "item_code": actual_item}, "refunded", 1)
+												refund_items_processed = True
+												return_created = True
+												
+												frappe.log_error(
+													title="Return Invoice - Item found from TDS",
+													message=f"Order ID: {order_id}, Item: {actual_item}, Item name from TDS: {item_name_from_tds}, Estimated Qty: {estimated_qty}"
+												)
+					
+					# If still no items processed after TDS check, log error and create failed sync record
+					if not refund_items_processed:
+						frappe.log_error(
+							title="Return Invoice - No items processed",
+							message=f"Order ID: {order_id}, Refund: {frappe.as_json(refund)}, Items: {frappe.as_json(refund.get('items', []))}, TDS: {frappe.as_json(refund.get('tds', []))}"
+						)
+						failed_sync_record = frappe.new_doc('Amazon Failed Sync Record')
+						failed_sync_record.amazon_order_id = order_id
+						failed_sync_record.remarks = f'Failed to create return Sales Invoice, No items could be processed. Sales Order ID: {so_id}, Refund items: {len(refund.get("items", []))}'
+						failed_sync_record.payload = frappe.as_json(refund)
+						if refund.get("posting_date"):
+							failed_sync_record.posting_date = dateutil.parser.parse(refund.get("posting_date")).strftime("%Y-%m-%d")
+						if refund.get("order_date"):
+							failed_sync_record.amazon_order_date = dateutil.parser.parse(refund.get("order_date")).strftime("%Y-%m-%d")
+						if refund.get("amazon_order_amount"):
+							failed_sync_record.amazon_order_amount = refund.get("amazon_order_amount")
+						failed_sync_record.save(ignore_permissions=True)
+						continue
+					else:
+						# Items were processed from TDS, add charges, fees, and TDS
+						for charge in refund.get("charges", []):
+							return_si.append("taxes", charge)
+
+						for fee in refund.get("fees", []):
+							return_si.append("taxes", fee)
+
+						for tds in refund.get("tds", []):
+							return_si.append("taxes", tds)
+
+						return_si.disable_rounded_total = 1
+						return_si.update_outstanding_for_self = 1
+						return_si.update_billed_amount_in_sales_order = 1
 			
 			# Only insert and submit if items were created
 			if return_created and len(return_si.items) > 0:
