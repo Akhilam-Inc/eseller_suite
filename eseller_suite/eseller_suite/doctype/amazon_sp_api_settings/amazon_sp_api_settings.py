@@ -21,7 +21,47 @@ def enhance_hsn_error_with_items(error_message, doc):
 	if not any(keyword.lower() in str(error_message).lower() for keyword in hsn_keywords):
 		return error_message
 	
-	# Find items without HSN code
+	import re
+	error_str = str(error_message)
+	
+	# Check for specific error format: "HSN/SAC must exist and should be X digits long for the following row numbers:"
+	# Pattern matches: "for the following row numbers:" followed by optional HTML tags and row numbers
+	row_numbers_pattern = r'(for the following row numbers:\s*(?:<br>)?\s*)(?:<[^>]+>)?([\d\s,]+)(?:<[^>]+>)?'
+	match = re.search(row_numbers_pattern, error_str, re.IGNORECASE)
+	
+	if match:
+		# Extract row numbers (remove HTML tags)
+		row_numbers_str = match.group(2).strip()
+		row_numbers_str = re.sub(r'<[^>]+>', '', row_numbers_str)
+		row_numbers = [int(r.strip()) for r in row_numbers_str.split(',') if r.strip().isdigit()]
+		
+		# Create a mapping of row idx to item_name
+		row_to_item = {}
+		for item in doc.items:
+			if item.idx in row_numbers:
+				item_name = item.get('item_name') or item.get('item_code') or 'Unknown'
+				row_to_item[item.idx] = item_name
+		
+		# Replace row numbers with "row_number {item_name}"
+		enhanced_rows = []
+		for row_num in row_numbers:
+			if row_num in row_to_item:
+				enhanced_rows.append(f"{row_num} {row_to_item[row_num]}")
+			else:
+				enhanced_rows.append(str(row_num))
+		
+		# Replace the row numbers in the error message, preserving the prefix
+		enhanced_rows_str = ", ".join(enhanced_rows)
+		# Use a lambda function to avoid regex group reference issues
+		enhanced_message = re.sub(
+			row_numbers_pattern,
+			lambda m: m.group(1) + enhanced_rows_str,
+			error_str,
+			flags=re.IGNORECASE
+		)
+		return enhanced_message
+	
+	# Fallback: Find items without HSN code
 	items_without_hsn = []
 	for item in doc.items:
 		if not item.get("gst_hsn_code"):
