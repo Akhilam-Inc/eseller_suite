@@ -6,6 +6,7 @@ import json
 from frappe.model.document import Document
 from frappe.utils import get_url_to_form
 from eseller_suite.eseller_suite.doctype.amazon_sp_api_settings.amazon_repository import get_order
+from eseller_suite.eseller_suite.doctype.amazon_sp_api_settings.amazon_sp_api_settings import enhance_hsn_error_with_items
 
 class AmazonFailedSyncRecord(Document):
 	@frappe.whitelist()
@@ -16,8 +17,50 @@ class AmazonFailedSyncRecord(Document):
 				amz_setting_name = frappe.db.get_value('Amazon SP API Settings', { 'is_active':1 })
 				try:
 					so = get_order(amz_setting_name=amz_setting_name, amazon_order_ids=self.amazon_order_id)
+					# Check if order/invoice was created successfully
+					if so and len(so) > 0:
+						# Verify that a Sales Order or Sales Invoice exists for this amazon_order_id
+						so_exists = frappe.db.exists("Sales Order", {"amazon_order_id": self.amazon_order_id})
+						si_exists = frappe.db.exists("Sales Invoice", {"amazon_order_id": self.amazon_order_id})
+						
+						if so_exists or si_exists:
+							# Order/Invoice created successfully, delete the failed sync record
+							record_name = self.name
+							frappe.delete_doc(self.doctype, record_name, ignore_permissions=True, force=True)
+							frappe.db.commit()
+							return {"success": True, "message": "Order/Invoice created successfully. Failed sync record deleted."}
 				except Exception as e:
-					print(e)
+					error_msg = str(e)
+					# Check if it's an HSN/SAC error and enhance with item information
+					if "HSN/SAC" in error_msg or "hsn_code" in error_msg.lower():
+						# Try to get the sales order or sales invoice to extract item information
+						try:
+							# Check for Sales Order first
+							so_name = frappe.db.get_value("Sales Order", {"amazon_order_id": self.amazon_order_id}, "name")
+							if so_name:
+								doc = frappe.get_doc("Sales Order", so_name)
+								enhanced_error = enhance_hsn_error_with_items(error_msg, doc)
+								# Update the failed sync record with enhanced error
+								self.remarks = enhanced_error
+								self.save(ignore_permissions=True)
+								# Re-throw with enhanced message
+								frappe.throw(enhanced_error)
+							else:
+								# Check for Sales Invoice
+								si_name = frappe.db.get_value("Sales Invoice", {"amazon_order_id": self.amazon_order_id, "docstatus": 0}, "name")
+								if si_name:
+									doc = frappe.get_doc("Sales Invoice", si_name)
+									enhanced_error = enhance_hsn_error_with_items(error_msg, doc)
+									# Update the failed sync record with enhanced error
+									self.remarks = enhanced_error
+									self.save(ignore_permissions=True)
+									# Re-throw with enhanced message
+									frappe.throw(enhanced_error)
+						except Exception as enhance_error:
+							# If enhancement fails, just throw original error
+							pass
+					# Re-throw the original exception if not HSN error or enhancement failed
+					raise
 		if so:
 			return so
 		else:

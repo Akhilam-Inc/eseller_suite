@@ -2,6 +2,8 @@
 # For license information, please see license.txt
 
 from requests import request
+import urllib.parse
+import frappe
 
 __all__ = [
 	"SPAPIError",
@@ -89,8 +91,13 @@ class SPAPI(object):
 		self.refresh_token = refresh_token
 		self.country_code = country_code
 		self.region, self.endpoint, self.marketplace_id = Util.get_marketplace_data(country_code)
-
+		# Store last request/response details for logging
+		self.last_request_details = None
+		
 	def get_access_token(self) -> str:
+		client_id = (self.client_id or "").strip()
+		client_secret = (self.client_secret or "").strip()
+		refresh_token = (self.refresh_token or "").strip()
 		data = {
 			"grant_type": "refresh_token",
 			"client_id": self.client_id,
@@ -98,20 +105,78 @@ class SPAPI(object):
 			"refresh_token": self.refresh_token,
 		}
 
-		response = request(method="POST", url=self.AUTH_URL, data=data)
+		headers = {
+			"Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"
+		}
+
+		# Use urlencode (percent-encodes reserved chars). This is fine in most cases.
+		encoded_body = urllib.parse.urlencode(data)
+
+		response = request(method="POST", url=self.AUTH_URL, data=encoded_body, headers=headers)
+
+		# Debug log to confirm what was actually sent (useful if still failing)
+		try:
+			sent_body = getattr(response.request, "body", None) or getattr(response.request, "data", None)
+			sent_headers = getattr(response.request, "headers", None)
+		except Exception:
+			sent_body, sent_headers = None, None
+
+		# frappe.log_error(
+		# 	title="Amazon Token Debug",
+		# 	message=f"Sent headers: {sent_headers}\nSent body: {sent_body}\nResp status: {response.status_code}\nResp body: {response.text}"
+		# )
+
 		result = response.json()
 		if response.status_code == 200:
+			# frappe.log_error(title="Amazon SP Token", message=f"{result}")
 			return result.get("access_token")
-		exception = SPAPIError(
-			error=result.get("error"), error_description=result.get("error_description")
-		)
+
+		exception = SPAPIError(error=result.get("error"), error_description=result.get("error_description"))
 		raise exception
+	# def get_access_token(self) -> str:
+	# 	data = {
+	# 		"grant_type": "refresh_token",
+	# 		"client_id": self.client_id,
+	# 		"client_secret": self.client_secret,
+	# 		"refresh_token": self.refresh_token,
+	# 	}
+
+	# 	headers = {
+	# 		'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8'
+	# 	}
+	# 	# URL-encode each value (mimics curl --data-urlencode)
+	# 	# urllib.parse.urlencode will percent-encode reserved characters
+	# 	encoded_body = urllib.parse.urlencode(data)
+	# 	response = request(method="POST", url=self.AUTH_URL, data=encoded_body , headers = headers)
+	# 	result = response.json()
+	# 	if response.status_code == 200:
+	# 		frappe.log_error(title="Amazon SP Token" , message = f"{result}")
+	# 		return result.get("access_token")
+	# 	exception = SPAPIError(
+	# 		error=result.get("error"), error_description=result.get("error_description")
+	# 	)
+	# 	raise exception
 
 	def get_headers(self) -> dict:
 		return {"x-amz-access-token": self.get_access_token()}
 
+	def _mask_headers(headers: dict, hide_keys=("authorization", "x-amz-access-token", "x-amz-security-token")) -> dict:
+		"""Return a copy of headers with sensitive values masked for logging."""
+		masked = {}
+		for k, v in (headers or {}).items():
+			lk = k.lower()
+			if any(h in lk for h in hide_keys):
+				masked[k] = "***MASKED***"
+			else:
+				masked[k] = v
+		return masked
+
 	def make_request(
-		self, method: str = "GET", append_to_base_uri: str = "", params: dict = None, data: dict = None,
+		self,
+		method: str = "GET",
+		append_to_base_uri: str = "",
+		params: dict = None,
+		data: dict = None,
 	) -> dict:
 		if isinstance(params, dict):
 			params = Util.remove_empty(params)
@@ -119,15 +184,88 @@ class SPAPI(object):
 			data = Util.remove_empty(data)
 
 		url = self.endpoint + self.BASE_URI + append_to_base_uri
+		headers = self.get_headers()
 
-		response = request(
-			method=method,
-			url=url,
-			params=params,
-			data=data,
-			headers=self.get_headers()
-		)
-		return response.json()
+		try:
+			response = request(
+				method=method,
+				url=url,
+				params=params,
+				data=data,
+				headers=headers,
+				timeout=30,  # optional but safer
+			)
+
+			# Log request + response if not 2xx
+			if response.status_code < 200 or response.status_code >= 300:
+				frappe.log_error(
+					title="Amazon SP-API Request Error",
+					message=(
+						f"METHOD: {method}\n"
+						f"URL: {response.url}\n"
+						f"Headers: {headers}\n"
+						f"Params: {params}\n"
+						f"Data: {data}\n\n"
+						f"Status: {response.status_code}\n"
+						f"Response: {response.text}"
+					)
+				)
+				response.raise_for_status()
+
+			# Store request/response details for logging
+			try:
+				response_json = response.json()
+			except Exception:
+				response_json = {"error": "Failed to parse JSON", "text": response.text}
+			
+			self.last_request_details = {
+				"method": method,
+				"url": response.url if hasattr(response, 'url') else url,
+				"headers": headers,
+				"params": params,
+				"data": data,
+				"status_code": str(response.status_code),
+				"response": response_json,
+			}
+			
+			return response_json
+
+		except Exception as e:
+			# Capture traceback + partial response (if any)
+			body = ""
+			if "response" in locals():
+				body = f"\nStatus: {response.status_code}\nResponse: {response.text}"
+				try:
+					response_json = response.json()
+				except Exception:
+					response_json = {"error": str(e), "text": response.text}
+			else:
+				response_json = {"error": str(e)}
+			
+			# Store request/response details even for errors
+			self.last_request_details = {
+				"method": method,
+				"url": url,
+				"headers": headers,
+				"params": params,
+				"data": data,
+				"status_code": str(getattr(response, 'status_code', 'N/A')) if "response" in locals() else "N/A",
+				"response": response_json,
+			}
+			
+			frappe.log_error(
+				title="Amazon SP-API Exception",
+				message=(
+					f"METHOD: {method}\n"
+					f"URL: {url}\n"
+					f"Params: {params}\n"
+					f"Data: {data}\n\n"
+					f"Exception: {str(e)}{body}\n"
+					f"Traceback:\n{frappe.get_traceback()}"
+				)
+			)
+			# Re-raise so caller sees failure
+			raise
 
 	def list_to_dict(self, key: str, values: list, data: dict) -> None:
 		if values and isinstance(values, list):
@@ -216,7 +354,7 @@ class Orders(SPAPI):
 class CatalogItems(SPAPI):
 	""" Amazon Catalog Items API """
 
-	BASE_URI = "/catalog/v0"
+	BASE_URI = "/catalog/2022-04-01"
 
 	def get_catalog_item(self, asin: str, marketplace_id: str = None,) -> dict:
 		""" Returns a specified item and its attributes. """
@@ -224,7 +362,7 @@ class CatalogItems(SPAPI):
 			marketplace_id = self.marketplace_id
 
 		append_to_base_uri = f"/items/{asin}"
-		data = dict(MarketplaceId=marketplace_id)
+		data = dict(marketplaceIds=marketplace_id)
 
 		return self.make_request(append_to_base_uri=append_to_base_uri, params=data)
 

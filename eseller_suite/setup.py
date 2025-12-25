@@ -53,7 +53,7 @@ def get_item_custom_fields():
 			{
 				"fieldname": "amazon_item_code",
 				"fieldtype": "Data",
-				"label": "Amazon Item Code",
+				"label": "ASIN",
 				"insert_after": "item_code",
 				"in_standard_filter": 1,
 				"unique": 1,

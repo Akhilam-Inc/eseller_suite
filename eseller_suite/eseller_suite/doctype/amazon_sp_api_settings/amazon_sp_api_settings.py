@@ -11,6 +11,71 @@ from frappe.utils import add_days, getdate, now_datetime, today, get_date_str
 import pytz
 
 
+def enhance_hsn_error_with_items(error_message, doc):
+	"""Enhance HSN/SAC validation errors with item information"""
+	if not doc or not hasattr(doc, 'items'):
+		return error_message
+	
+	# Check if error is related to HSN/SAC
+	hsn_keywords = ["HSN/SAC", "HSN", "SAC", "hsn_code", "gst_hsn_code"]
+	if not any(keyword.lower() in str(error_message).lower() for keyword in hsn_keywords):
+		return error_message
+	
+	import re
+	error_str = str(error_message)
+	
+	# Check for specific error format: "HSN/SAC must exist and should be X digits long for the following row numbers:"
+	# Pattern matches: "for the following row numbers:" followed by optional HTML tags and row numbers
+	row_numbers_pattern = r'(for the following row numbers:\s*(?:<br>)?\s*)(?:<[^>]+>)?([\d\s,]+)(?:<[^>]+>)?'
+	match = re.search(row_numbers_pattern, error_str, re.IGNORECASE)
+	
+	if match:
+		# Extract row numbers (remove HTML tags)
+		row_numbers_str = match.group(2).strip()
+		row_numbers_str = re.sub(r'<[^>]+>', '', row_numbers_str)
+		row_numbers = [int(r.strip()) for r in row_numbers_str.split(',') if r.strip().isdigit()]
+		
+		# Create a mapping of row idx to item_name
+		row_to_item = {}
+		for item in doc.items:
+			if item.idx in row_numbers:
+				item_name = item.get('item_name') or item.get('item_code') or 'Unknown'
+				row_to_item[item.idx] = item_name
+		
+		# Replace row numbers with "row_number {item_name}"
+		enhanced_rows = []
+		for row_num in row_numbers:
+			if row_num in row_to_item:
+				enhanced_rows.append(f"{row_num} {row_to_item[row_num]}")
+			else:
+				enhanced_rows.append(str(row_num))
+		
+		# Replace the row numbers in the error message, preserving the prefix
+		enhanced_rows_str = ", ".join(enhanced_rows)
+		# Use a lambda function to avoid regex group reference issues
+		enhanced_message = re.sub(
+			row_numbers_pattern,
+			lambda m: m.group(1) + enhanced_rows_str,
+			error_str,
+			flags=re.IGNORECASE
+		)
+		return enhanced_message
+	
+	# Fallback: Find items without HSN code
+	items_without_hsn = []
+	for item in doc.items:
+		if not item.get("gst_hsn_code"):
+			item_info = f"Row {item.idx}: {item.get('item_code', 'Unknown')} ({item.get('item_name', 'N/A')})"
+			items_without_hsn.append(item_info)
+	
+	if items_without_hsn:
+		items_list = "\n".join(items_without_hsn)
+		enhanced_message = f"{error_message}\n\nItems requiring HSN/SAC Code:\n{items_list}"
+		return enhanced_message
+	
+	return error_message
+
+
 class AmazonSPAPISettings(Document):
 	def validate(self):
 		self.validate_after_date()
@@ -120,12 +185,33 @@ def enq_si_submit(sales_orders = []):
 		sales_invoices = frappe.db.get_all("Sales Invoice", {"docstatus":0, "amazon_order_id":["is", "set"]}, pluck="name")
 	else:
 		sales_invoices = frappe.db.get_all("Sales Invoice Item", {"sales_order":["in", sales_orders]}, pluck="parent")
-	for sales_invoice in sales_invoices:
-		sales_invoice = frappe.get_doc("Sales Invoice", sales_invoice)
+	for sales_invoice_name in sales_invoices:
 		frappe.db.savepoint("before_testing_si_submit")
+		sales_invoice = None
 		try:
+			sales_invoice = frappe.get_doc("Sales Invoice", sales_invoice_name)
 			sales_invoice.submit()
 		except Exception as e:
 			frappe.db.rollback(save_point="before_testing_si_submit")
-			if not frappe.db.exists("Amazon Failed Invoice Record", {"invoice_id":sales_invoice.name}):
-				frappe.get_doc({"doctype":"Amazon Failed Invoice Record", "invoice_id":sales_invoice.name, "error":e}).insert()
+			# Log error and skip this invoice, continue with next invoice
+			error_msg = str(e)
+			# Enhance HSN/SAC errors with item information
+			enhanced_error = enhance_hsn_error_with_items(error_msg, sales_invoice)
+			frappe.log_error(
+				title=f"Failed to submit Sales Invoice: {sales_invoice_name}",
+				message=f"Invoice: {sales_invoice_name}\nError: {enhanced_error}\nTraceback: {frappe.get_traceback()}",
+			)
+			# Create failed invoice record if it doesn't exist
+			if not frappe.db.exists("Amazon Failed Invoice Record", {"invoice_id": sales_invoice_name}):
+				try:
+					frappe.get_doc({
+						"doctype": "Amazon Failed Invoice Record",
+						"invoice_id": sales_invoice_name,
+						"error": str(e)
+					}).insert(ignore_permissions=True)
+				except Exception as save_error:
+					frappe.log_error(
+						title=f"Failed to create Amazon Failed Invoice Record for {sales_invoice_name}",
+						message=str(save_error)
+					)
+			continue
