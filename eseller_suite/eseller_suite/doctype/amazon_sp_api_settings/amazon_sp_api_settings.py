@@ -127,6 +127,331 @@ class AmazonSPAPISettings(Document):
 				_("Please enable the Amazon SP API Settings {0}.").format(frappe.bold(self.name))
 			)
 
+	@frappe.whitelist()
+	def fetch_warehouses(self):
+		"""Fetch warehouses from Amazon Supply Sources and create them in ERPNext if they don't exist"""
+		if not self.is_active:
+			frappe.throw(_("Please enable the Amazon SP API Settings first."))
+		
+		from eseller_suite.eseller_suite.doctype.amazon_sp_api_settings.amazon_sp_api import (
+			SupplySources,
+		)
+		
+		try:
+			# Initialize SupplySources API
+			supply_sources_api = SupplySources(
+				client_id=self.client_id,
+				client_secret=self.get_password("client_secret"),
+				refresh_token=self.refresh_token,
+				country_code=self.country,
+			)
+			
+			# Fetch supply sources from Amazon
+			# Note: This endpoint may return 403 if not available or if permissions are not granted
+			try:
+				all_supply_sources = []
+				next_page_token = None
+				
+				# Fetch all pages of supply sources
+				while True:
+					supply_sources_response = supply_sources_api.get_supply_sources(
+						page_size=100,
+						next_page_token=next_page_token
+					)
+					
+					# Parse supply sources response - response structure: {"supplySources": [...], "nextPageToken": "..."}
+					if isinstance(supply_sources_response, dict):
+						page_supply_sources = supply_sources_response.get("supplySources", [])
+						all_supply_sources.extend(page_supply_sources)
+						
+						# Check for next page
+						next_page_token = supply_sources_response.get("nextPageToken")
+						if not next_page_token:
+							break
+					else:
+						break
+				
+				if not all_supply_sources:
+					frappe.msgprint(_("No supply sources found in the response from Amazon."))
+					return {"status": "no_data", "message": "No supply sources found in the response."}
+				
+			except Exception as api_error:
+				# If the endpoint fails, log error and return
+				error_details = str(api_error)
+				frappe.log_error(
+					title="Supply Sources API Error",
+					message=f"The Supply Sources API endpoint returned an error: {error_details}\n\n"
+							f"Error: {error_details}\n"
+							f"Traceback: {frappe.get_traceback()}"
+				)
+				if "403" in error_details or "404" in error_details:
+					frappe.throw(
+						_("The Supply Sources API endpoint is not available (403/404). "
+						  "Please check your IAM role permissions for the Supply Sources API, "
+						  "or this endpoint may not be available for your marketplace. "
+						  "Check the error log for more details.")
+					)
+				else:
+					raise
+			
+			# Create warehouses from supply sources
+			created_count = 0
+			skipped_count = 0
+			errors = []
+			
+			# Create warehouses in ERPNext from supply sources
+			for source in all_supply_sources:
+				try:
+					# Extract warehouse information from supply source
+					supply_source_id = source.get("supplySourceId")
+					supply_source_code = source.get("supplySourceCode")
+					supply_source_alias = source.get("alias")
+					
+					# Use supplySourceCode as warehouse code, fallback to supplySourceId
+					warehouse_code = supply_source_code or supply_source_id
+					
+					# Use alias as warehouse name, fallback to code or ID
+					warehouse_name = supply_source_alias or supply_source_code or supply_source_id
+					
+					# Get supply source data
+					supply_source_data = source
+					
+					if not warehouse_code:
+						errors.append(f"Missing warehouse code in center data: {center}")
+						continue
+					
+					# Check if warehouse already exists
+					if frappe.db.exists("Warehouse", warehouse_code):
+						skipped_count += 1
+						continue
+					
+					# Create new warehouse
+					warehouse = frappe.new_doc("Warehouse")
+					warehouse.warehouse_name = warehouse_name
+					warehouse.company = self.company
+					warehouse.is_group = 0
+					
+					# Set parent warehouse if specified in settings
+					if hasattr(self, 'parent_item_group') and self.parent_item_group:
+						# Try to find a parent warehouse with the same name pattern
+						parent_warehouse = frappe.db.get_value("Warehouse", {"warehouse_name": "All Warehouses", "is_group": 1}, "name")
+						if parent_warehouse:
+							warehouse.parent_warehouse = parent_warehouse
+					
+					# Add custom field for Amazon supply source ID if it exists
+					if hasattr(warehouse, 'amazon_supply_source_id'):
+						warehouse.amazon_supply_source_id = supply_source_id
+					if hasattr(warehouse, 'amazon_supply_source_code'):
+						warehouse.amazon_supply_source_code = supply_source_code
+					
+					# Add supply source information to warehouse
+					if supply_source_id and supply_source_data:
+						# Try to add to custom field if it exists
+						if hasattr(warehouse, 'amazon_supply_source_id'):
+							warehouse.amazon_supply_source_id = supply_source_id
+						
+						# Get supply source details
+						supply_source_alias = supply_source_data.get("alias") or ""
+						supply_source_code = supply_source_data.get("supplySourceCode") or ""
+						
+						# Enhance warehouse name with supply source information
+						supply_source_display = supply_source_alias or supply_source_code or supply_source_id
+						if supply_source_display and supply_source_display not in warehouse_name:
+							warehouse.warehouse_name = f"{warehouse_name} - {supply_source_display}"
+						
+						# Store address information if available (could be used for warehouse address)
+						supply_source_address = supply_source_data.get("address", {})
+						if supply_source_address and hasattr(warehouse, 'custom_amazon_supply_source_address'):
+							warehouse.custom_amazon_supply_source_address = frappe.as_json(supply_source_address)
+					elif supply_source_id:
+						# If we only have the ID without full data
+						if hasattr(warehouse, 'amazon_supply_source_id'):
+							warehouse.amazon_supply_source_id = supply_source_id
+						if supply_source_id not in warehouse_name:
+							warehouse.warehouse_name = f"{warehouse_name} (Supply Source: {supply_source_id})"
+					
+					warehouse.insert(ignore_permissions=True)
+					created_count += 1
+					
+				except Exception as e:
+					error_msg = f"Error creating warehouse {warehouse_code}: {str(e)}"
+					errors.append(error_msg)
+					frappe.log_error(
+						title="Error creating warehouse from Amazon",
+						message=f"{error_msg}\nCenter data: {frappe.as_json(center)}\nTraceback: {frappe.get_traceback()}"
+					)
+			
+			# Prepare response message
+			message_parts = []
+			if created_count > 0:
+				message_parts.append(_("{0} warehouse(s) created successfully.").format(created_count))
+			if skipped_count > 0:
+				message_parts.append(_("{0} warehouse(s) already exist and were skipped.").format(skipped_count))
+			if errors:
+				message_parts.append(_("{0} error(s) occurred.").format(len(errors)))
+			
+			message = " ".join(message_parts) if message_parts else _("No warehouses were processed.")
+			
+			if errors:
+				frappe.log_error(
+					title="Warehouse fetch errors",
+					message="\n".join(errors)
+				)
+			
+			frappe.msgprint(message, indicator="green" if created_count > 0 else "orange")
+			
+			return {
+				"status": "success",
+				"created": created_count,
+				"skipped": skipped_count,
+				"errors": len(errors),
+				"message": message
+			}
+			
+		except Exception as e:
+			# Handle SPAPIError specifically to get detailed error information
+			from eseller_suite.eseller_suite.doctype.amazon_sp_api_settings.amazon_sp_api import (
+				SPAPIError,
+			)
+			from requests.exceptions import HTTPError
+			
+			error_msg = ""
+			if isinstance(e, SPAPIError):
+				error_msg = f"Amazon API Error: {e.error}"
+				if e.error_description and e.error_description != "-":
+					error_msg += f" - {e.error_description}"
+			elif isinstance(e, HTTPError):
+				# Try to get response details for HTTP errors
+				response_text = ""
+				if hasattr(e, 'response') and e.response is not None:
+					try:
+						response_text = e.response.text
+					except:
+						pass
+				
+				if "403" in str(e):
+					error_msg = "403 Forbidden: The Supply Sources API endpoint may not be available or you may not have the required permissions. "
+					error_msg += "Please check:\n1. Your SP API credentials have access to Supply Sources API\n"
+					error_msg += "2. The endpoint is correct for your marketplace\n"
+					error_msg += "3. Your IAM role has the necessary permissions"
+					if response_text:
+						error_msg += f"\n\nResponse: {response_text}"
+				else:
+					error_msg = f"HTTP Error: {str(e)}"
+					if response_text:
+						error_msg += f"\nResponse: {response_text}"
+			else:
+				error_msg = f"Error fetching warehouses from Amazon: {str(e)}"
+			
+			frappe.log_error(
+				title="Error fetching warehouses from Amazon",
+				message=f"{error_msg}\nTraceback: {frappe.get_traceback()}"
+			)
+			frappe.throw(_(error_msg))
+	
+	def _extract_warehouses_from_orders(self):
+		"""Extract fulfillment center/warehouse information and supply source from existing Sales Orders"""
+		try:
+			# Get distinct fulfillment channels and supply sources from existing Sales Orders
+			# Also check Amazon Failed Sync Records for order payloads that might contain supply source info
+			fulfillment_channels = frappe.db.sql("""
+				SELECT DISTINCT fulfillment_channel, COUNT(*) as order_count
+				FROM `tabSales Order`
+				WHERE amazon_order_id IS NOT NULL
+					AND fulfillment_channel IS NOT NULL
+					AND fulfillment_channel != ''
+				GROUP BY fulfillment_channel
+			""", as_dict=True)
+			
+			# Try to extract supply source IDs from Amazon Failed Sync Records payloads
+			supply_sources = {}
+			try:
+				failed_records = frappe.db.sql("""
+					SELECT DISTINCT payload, amazon_order_id
+					FROM `tabAmazon Failed Sync Record`
+					WHERE payload IS NOT NULL
+						AND payload != ''
+					LIMIT 100
+				""", as_dict=True)
+				
+				import json
+				for record in failed_records:
+					try:
+						if record.payload:
+							payload = json.loads(record.payload) if isinstance(record.payload, str) else record.payload
+							# Check for supply source in various possible locations
+							supply_source = (
+								payload.get("ActualFulfillmentSupplySourceId") or
+								payload.get("FulfillmentSupplySourceId") or
+								payload.get("supplySourceId") or
+								None
+							)
+							if supply_source:
+								fulfillment_channel = payload.get("FulfillmentChannel") or "UNKNOWN"
+								if fulfillment_channel not in supply_sources:
+									supply_sources[fulfillment_channel] = set()
+								supply_sources[fulfillment_channel].add(supply_source)
+					except:
+						continue
+			except:
+				pass
+			
+			if not fulfillment_channels:
+				return {"status": "no_data", "fulfillment_centers": []}
+			
+			fulfillment_centers = []
+			for channel in fulfillment_channels:
+				# Get supply source for this fulfillment channel if available
+				channel_supply_sources = supply_sources.get(channel.fulfillment_channel, set())
+				supply_source_id = list(channel_supply_sources)[0] if channel_supply_sources else None
+				
+				# Create a warehouse entry based on fulfillment channel
+				# AFN = Amazon Fulfillment Network (FBA)
+				# MFN = Merchant Fulfillment Network (FBM)
+				if channel.fulfillment_channel == "AFN":
+					# Use the AFN warehouse from settings if available
+					if hasattr(self, 'afn_warehouse') and self.afn_warehouse:
+						center_data = {
+							"fulfillmentCenterId": "AFN",
+							"fulfillmentCenterName": f"Amazon Fulfillment Network ({self.afn_warehouse})",
+							"code": "AFN"
+						}
+					else:
+						center_data = {
+							"fulfillmentCenterId": "AFN",
+							"fulfillmentCenterName": "Amazon Fulfillment Network",
+							"code": "AFN"
+						}
+					if supply_source_id:
+						center_data["supplySourceId"] = supply_source_id
+					fulfillment_centers.append(center_data)
+				elif channel.fulfillment_channel == "MFN":
+					# Use the MFN warehouse from settings if available
+					if hasattr(self, 'warehouse') and self.warehouse:
+						center_data = {
+							"fulfillmentCenterId": "MFN",
+							"fulfillmentCenterName": f"Merchant Fulfillment Network ({self.warehouse})",
+							"code": "MFN"
+						}
+					else:
+						center_data = {
+							"fulfillmentCenterId": "MFN",
+							"fulfillmentCenterName": "Merchant Fulfillment Network",
+							"code": "MFN"
+						}
+					if supply_source_id:
+						center_data["supplySourceId"] = supply_source_id
+					fulfillment_centers.append(center_data)
+			
+			return {"status": "success", "fulfillment_centers": fulfillment_centers}
+			
+		except Exception as e:
+			frappe.log_error(
+				title="Error extracting warehouses from orders",
+				message=f"Error: {str(e)}\nTraceback: {frappe.get_traceback()}"
+			)
+			return {"status": "error", "fulfillment_centers": []}
+
 
 # Called via a hook in every hour.
 def schedule_get_order_details():

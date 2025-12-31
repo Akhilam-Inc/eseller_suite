@@ -10,6 +10,8 @@ __all__ = [
 	"Finances",
 	"Orders",
 	"CatalogItems",
+	"FulfillmentInbound",
+	"SupplySources",
 ]
 
 
@@ -365,6 +367,33 @@ class CatalogItems(SPAPI):
 		data = dict(marketplaceIds=marketplace_id)
 
 		return self.make_request(append_to_base_uri=append_to_base_uri, params=data)
+
+class FulfillmentInbound(SPAPI):
+	""" Amazon Fulfillment Inbound API """
+
+	BASE_URI = "/fba/inbound/2024-03-20/"
+
+	def get_fulfillment_centers(self) -> dict:
+		""" Returns a list of fulfillment centers available to the seller. """
+		# Note: This endpoint may not be available in all marketplaces or may require specific permissions
+		# Alternative: Fulfillment centers are often returned in shipment plans or other inbound operations
+		append_to_base_uri = "fulfillmentCenters"
+		return self.make_request(append_to_base_uri=append_to_base_uri)
+
+
+class SupplySources(SPAPI):
+	""" Amazon Supply Sources API """
+
+	BASE_URI = "/supplySources/2020-07-01/"
+
+	def get_supply_sources(self, page_size: int = 100, next_page_token: str = None) -> dict:
+		""" Returns a list of supply sources available to the seller. """
+		# Note: This endpoint may not be available in all marketplaces or may require specific permissions
+		append_to_base_uri = "supplySources"
+		params = {"pageSize": page_size}
+		if next_page_token:
+			params["nextPageToken"] = next_page_token
+		return self.make_request(append_to_base_uri=append_to_base_uri, params=params)
 
 
 class Util:

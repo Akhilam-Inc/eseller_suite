@@ -41,7 +41,8 @@
   "is_old_data_migrated",
   "map_state_data",
   "adjust_stock_for_returns",
-  "return_invoice_stock_adjustment_before"
+  "return_invoice_stock_adjustment_before",
+  "enable_sales_order_creation"
  ],
  "fields": [
   {
@@ -283,12 +284,18 @@
    "label": "Enable Log"
   },
   {
-   "fieldname": "amazon_customer",
-   "fieldtype": "Link",
-   "label": "Amazon Customer",
-   "options": "Customer"
-  }
- ],
+  "fieldname": "amazon_customer",
+  "fieldtype": "Link",
+  "label": "Amazon Customer",
+  "options": "Customer"
+ },
+ {
+  "default": "1",
+  "fieldname": "enable_sales_order_creation",
+  "fieldtype": "Check",
+  "label": "Enable Sales Order Creation"
+ }
+],
  "links": [],
  "modified": "2025-12-22 11:09:58.622357",
  "modified_by": "Administrator",

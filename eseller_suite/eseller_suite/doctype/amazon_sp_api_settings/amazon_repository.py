@@ -634,6 +634,320 @@ class AmazonRepository:
 
 		return final_order_items
 
+	def create_sales_invoice_directly(self, order, order_id, order_date, amazon_order_amount, refunds) -> str | None:
+		"""Create Sales Invoice directly without creating Sales Order"""
+		def create_customer(order) -> str:
+			# First check if amazon_customer is set in settings
+			if hasattr(self.amz_setting, 'amazon_customer') and self.amz_setting.amazon_customer:
+				# Verify the customer exists
+				if frappe.db.exists("Customer", self.amz_setting.amazon_customer):
+					return self.amz_setting.amazon_customer
+			
+			# Fall back to creating/finding customer based on Amazon Order ID
+			order_customer_name = order.get('AmazonOrderId', "")
+
+			existing_customer_name = frappe.db.get_value(
+				"Customer", filters={"name": order_customer_name}, fieldname="name"
+			)
+
+			if existing_customer_name:
+				filters = [
+					["Dynamic Link", "link_doctype", "=", "Customer"],
+					["Dynamic Link", "link_name", "=", existing_customer_name],
+					["Dynamic Link", "parenttype", "=", "Contact"],
+				]
+
+				existing_contacts = frappe.get_list("Contact", filters)
+
+				if not existing_contacts:
+					new_contact = frappe.new_doc("Contact")
+					new_contact.first_name = order_customer_name
+					new_contact.append(
+						"links", {"link_doctype": "Customer", "link_name": existing_customer_name},
+					)
+					new_contact.insert()
+
+				return existing_customer_name
+			else:
+				new_customer = frappe.new_doc("Customer")
+				new_customer.customer_name = order_customer_name
+				new_customer.customer_group = self.amz_setting.customer_group
+				new_customer.territory = self.amz_setting.territory
+				new_customer.customer_type = self.amz_setting.customer_type
+				new_customer.save()
+
+				new_contact = frappe.new_doc("Contact")
+				new_contact.first_name = order_customer_name
+				new_contact.append("links", {"link_doctype": "Customer", "link_name": new_customer.name})
+
+				new_contact.insert()
+
+				return new_customer.name
+
+		def create_address(order, customer_name) -> str | None:
+			shipping_address = order.get("ShippingAddress")
+
+			if not shipping_address:
+				return
+			else:
+				make_address = frappe.new_doc("Address")
+				make_address.address_line1 = shipping_address.get("AddressLine1", "Not Provided")
+				make_address.city = shipping_address.get("City", "Not Provided")
+				amazon_state = shipping_address.get("StateOrRegion")
+				if self.amz_setting.map_state_data:
+					if frappe.db.exists("Amazon State Mapping", {"amazon_state": amazon_state}):
+						make_address.state = frappe.db.get_value("Amazon State Mapping", {"amazon_state": amazon_state}, "state")
+					else:
+						failed_sync_record = frappe.new_doc('Amazon Failed Sync Record')
+						failed_sync_record.amazon_order_id = order_id
+						failed_sync_record.remarks = 'No State Mapping found for {0}'.format(amazon_state)
+						failed_sync_record.save(ignore_permissions=True)
+						return
+				else:
+					make_address.state = amazon_state
+				make_address.pincode = shipping_address.get("PostalCode")
+
+				filters = [
+					["Dynamic Link", "link_doctype", "=", "Customer"],
+					["Dynamic Link", "link_name", "=", customer_name],
+					["Dynamic Link", "parenttype", "=", "Address"],
+				]
+				existing_address = frappe.get_list("Address", filters)
+
+				for address in existing_address:
+					address_doc = frappe.get_doc("Address", address["name"])
+					if (
+						address_doc.address_line1 == make_address.address_line1
+						and address_doc.pincode == make_address.pincode
+					):
+						return address
+
+				make_address.append("links", {"link_doctype": "Customer", "link_name": customer_name})
+				make_address.address_type = "Shipping"
+				make_address.insert()
+
+		# Check if Sales Invoice already exists
+		existing_si = frappe.db.get_value("Sales Invoice", {"amazon_order_id": order_id, "is_return": 0}, "name")
+		if existing_si:
+			return existing_si
+
+		customer_name = create_customer(order)
+		create_address(order, customer_name)
+
+		delivery_date = format_date_time_to_ist(order.get("LatestShipDate"))
+		transaction_date = format_date_time_to_ist(order.get("PurchaseDate"))
+		posting_date = get_datetime(transaction_date).strftime('%Y-%m-%d')
+		posting_time = get_datetime(transaction_date).strftime('%H:%M:%S')
+
+		si = frappe.new_doc("Sales Invoice")
+		si.amazon_order_id = order_id
+		si.marketplace_id = order.get("MarketplaceId")
+		si.amazon_order_status = order.get("OrderStatus")
+		si.fulfillment_channel = order.get("FulfillmentChannel")
+		si.replaced_order_id = order.get("ReplacedOrderId") or ''
+		if amazon_order_amount:
+			si.amazon_order_amount = amazon_order_amount
+		si.customer = customer_name
+		si.posting_date = posting_date
+		si.posting_time = posting_time
+		si.set_posting_time = 1
+		si.due_date = delivery_date if getdate(delivery_date) > getdate(transaction_date) else transaction_date
+		si.company = self.amz_setting.company
+		warehouse = self.amz_setting.warehouse
+		if si.fulfillment_channel:
+			if si.fulfillment_channel=='AFN':
+				warehouse = self.amz_setting.afn_warehouse
+		if self.amz_setting.temporary_stock_transfer_required:
+			warehouse = self.amz_setting.temporary_order_warehouse
+		if order.get("IsBusinessOrder"):
+			si.amazon_customer_type = 'B2B'
+		else:
+			si.amazon_customer_type = 'B2C'
+		si.set_warehouse = warehouse
+		si.update_stock = 1
+
+		items = self.get_order_items(order_id)
+
+		if not items:
+			return None
+
+		si.items = []
+		si.taxes = []
+		si.taxes_and_charges = ''
+		total_order_value = 0
+
+		# Check if all items are zero-qty
+		all_zero_qty = all(item.get("zero_qty_flag", False) for item in items)
+
+		for item in items:
+			if not all_zero_qty and item.get("zero_qty_flag", True):
+				continue
+
+			total_order_value += item.get('total_order_value', 0)
+			item["warehouse"] = warehouse
+			
+			# Ensure HSN code is set from Item master if not already present
+			if not item.get("gst_hsn_code") and item.get("item_code"):
+				item_hsn_code = frappe.db.get_value("Item", item.get("item_code"), "gst_hsn_code")
+				if item_hsn_code:
+					item["gst_hsn_code"] = item_hsn_code
+			
+			# Convert item dict to Sales Invoice Item format
+			si_item = {
+				"item_code": item.get("item_code"),
+				"item_name": item.get("item_name"),
+				"description": item.get("description"),
+				"rate": item.get("rate"),
+				"base_rate": item.get("base_rate"),
+				"qty": item.get("qty"),
+				"amount": item.get("amount"),
+				"base_amount": item.get("base_amount"),
+				"uom": item.get("uom", "Nos"),
+				"stock_uom": item.get("stock_uom", "Nos"),
+				"warehouse": warehouse,
+				"conversion_factor": item.get("conversion_factor", 1.0),
+				"allow_zero_valuation_rate": 1,
+				"total_order_value": item.get("total_order_value", 0)
+			}
+			if item.get("gst_hsn_code"):
+				si_item["gst_hsn_code"] = item.get("gst_hsn_code")
+			
+			si.append("items", si_item)
+
+		if total_order_value:
+			si.amazon_order_amount = total_order_value
+
+		taxes_and_charges = self.amz_setting.taxes_charges
+
+		if taxes_and_charges:
+			charges_and_fees = self.get_charges_and_fees(order_id)
+			if charges_and_fees.get("principal_amounts"):
+				principal_amounts = charges_and_fees.get("principal_amounts")
+				for item_row in si.items:
+					if item_row.item_name and principal_amounts.get(item_row.item_name):
+						pricipal_amount = float(principal_amounts.get(item_row.item_name)) or 0
+						qty = item_row.qty
+						if pricipal_amount:
+							item_row.rate = pricipal_amount
+							item_row.base_rate = pricipal_amount
+							item_row.amount = pricipal_amount*qty
+							item_row.base_amount = pricipal_amount*qty
+
+			for charge in charges_and_fees.get("charges"):
+				if charge:
+					si.append("taxes", charge)
+
+			for fee in charges_and_fees.get("fees"):
+				if fee:
+					si.append("taxes", fee)
+
+			for tds in charges_and_fees.get("tds"):
+				if tds:
+					si.append("taxes", tds)
+			
+			if not refunds:
+				for service_fee in charges_and_fees.get("service_fees"):
+					if service_fee:
+						mfn_postage_fee_account_head = frappe.db.get_value('Amazon SP API Settings', self.amz_setting.name, 'mfn_postage_fee_account_head')
+						if( not service_fee.get("account_head") == mfn_postage_fee_account_head) or si.replaced_order_id:
+							si.append("taxes", service_fee)
+						elif not frappe.db.exists("Journal Entry Account", {
+							"amazon_order_id": si.amazon_order_id,
+							"account": service_fee.get("account_head"),
+							"debit_in_account_currency": abs(service_fee.get("tax_amount")),
+						}):
+							try:
+								jv_doc = frappe.new_doc('Journal Entry')
+								jv_doc.voucher_type = 'Journal Entry'
+								jv_doc.posting_date = posting_date
+								jv_doc.user_remark = f'Amazon MFN Postage Fee for Order {si.amazon_order_id}'
+								jv_doc.amazon_order_id = si.amazon_order_id
+								tax_amount = abs(float(service_fee.get("tax_amount", 0)))
+								jv_row = jv_doc.append('accounts')
+								jv_row.account = service_fee.get("account_head")
+								jv_row.debit = tax_amount
+								jv_row.debit_in_account_currency = tax_amount
+								jv_row.user_remark = service_fee.get('description')
+								jv_row.amazon_order_id = si.amazon_order_id
+								default_receivable_account = frappe.db.get_value('Company', self.amz_setting.company, 'default_receivable_account')
+								jv_row = jv_doc.append('accounts')
+								jv_row.credit = abs(float(service_fee.get("tax_amount", 0)))
+								jv_row.credit_in_account_currency = abs(float(service_fee.get("tax_amount", 0)))
+								jv_row.user_remark = f'Amazon MFN Postage Fee for Order {si.amazon_order_id}'
+								jv_row.amazon_order_id = si.amazon_order_id
+								jv_row.party_type = 'Customer'
+								jv_row.party = si.get('customer')
+								jv_row.account = default_receivable_account
+								jv_doc.flags.ignore_mandatory = True
+								jv_doc.save(ignore_permissions=True)
+								jv_doc.submit()
+							except Exception as e:
+								pass
+
+		if charges_and_fees.get("additional_discount"):
+			si.discount_amount = float(charges_and_fees.get("additional_discount")) * -1
+
+		# Set missing values (e.g., debit_to, conversion_rate) even with ignore_validate
+		si.set_missing_values()
+		
+		# Set conversion_rate if not already set (required for GL entry calculation)
+		# Default to 1.0 if currency matches company currency or currency not set
+		if not si.conversion_rate:
+			company_currency = frappe.db.get_value("Company", si.company, "default_currency")
+			if not si.currency or si.currency == company_currency:
+				si.conversion_rate = 1.0
+			else:
+				# If different currency, try to get exchange rate, default to 1.0 if unavailable
+				try:
+					from erpnext.setup.utils import get_exchange_rate
+					si.conversion_rate = get_exchange_rate(si.currency, company_currency, si.posting_date) or 1.0
+				except Exception:
+					si.conversion_rate = 1.0
+		
+		# Calculate taxes and totals explicitly since ignore_validate might skip this
+		si.calculate_taxes_and_totals()
+
+		si.flags.ignore_mandatory = True
+		si.flags.ignore_validate = True
+		si.disable_rounded_total = 1
+		
+		try:
+			si.save(ignore_permissions=True)
+		except Exception as e:
+			error_msg = str(e)
+			# Enhance HSN/SAC errors with item information
+			enhanced_error = self.enhance_hsn_error_with_items(error_msg, si)
+			frappe.log_error(
+				title="Error saving Sales Invoice for Order {0}".format(si.amazon_order_id),
+				message=f"Error: {enhanced_error}\nTraceback: {frappe.get_traceback()}",
+			)
+			raise
+
+		order_statuses = [
+			"Shipped",
+			"InvoiceUnconfirmed",
+			"Unfulfillable",
+		]
+
+		order_status_valid = order.get("OrderStatus") in order_statuses
+		has_taxes = len(si.taxes) > 0
+
+		if order_status_valid and has_taxes:
+			try:
+				si.submit()
+			except Exception as e:
+				error_msg = str(e)
+				# Enhance HSN/SAC errors with item information
+				enhanced_error = self.enhance_hsn_error_with_items(error_msg, si)
+				frappe.log_error(
+					title="Error submitting Sales Invoice for Order {0}".format(si.amazon_order_id),
+					message=f"Error: {enhanced_error}\nTraceback: {frappe.get_traceback()}",
+				)
+				# Don't raise, return the invoice name even if submission fails
+				# It will be submitted later via enq_si_submit
+
+		return si.name
+
 	def create_sales_order(self, order) -> str | None:
 		def create_customer(order) -> str:
 			# First check if amazon_customer is set in settings
@@ -1320,6 +1634,13 @@ class AmazonRepository:
 			return so_id
 
 		else:
+			# Check if Sales Order creation is enabled
+			enable_sales_order_creation = getattr(self.amz_setting, 'enable_sales_order_creation', 1)
+			
+			# If Sales Order creation is disabled, create Sales Invoice directly
+			if not enable_sales_order_creation:
+				return self.create_sales_invoice_directly(order, order_id, order_date, amazon_order_amount, refunds)
+			
 			if so_docstatus and so_id:
 				return so_id
 			if not so_id:
@@ -1644,7 +1965,12 @@ class AmazonRepository:
 				)
 			else:
 				break
-		frappe.enqueue("eseller_suite.eseller_suite.doctype.amazon_sp_api_settings.amazon_sp_api_settings.enq_si_submit", sales_orders=sales_orders)
+		# Only enqueue if Sales Order creation is enabled (sales_orders contains SO names)
+		# If Sales Order creation is disabled, Sales Invoices are created directly and submitted if conditions are met
+		# Draft invoices will be picked up by enq_si_submit when called without sales_orders parameter
+		enable_sales_order_creation = getattr(self.amz_setting, 'enable_sales_order_creation', 1)
+		if enable_sales_order_creation:
+			frappe.enqueue("eseller_suite.eseller_suite.doctype.amazon_sp_api_settings.amazon_sp_api_settings.enq_si_submit", sales_orders=sales_orders)
 		return sales_orders
 
 	def get_order(self, amazon_order_ids) -> list:
