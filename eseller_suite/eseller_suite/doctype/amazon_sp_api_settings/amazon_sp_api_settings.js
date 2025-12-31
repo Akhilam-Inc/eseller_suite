@@ -5,6 +5,7 @@ frappe.ui.form.on('Amazon SP API Settings', {
     refresh(frm) {
         frm.trigger("set_queries");
         hanlde_retry_btn(frm);
+        handle_fetch_warehouses_btn(frm);
     },
     set_queries(frm) {
         frm.set_query("warehouse", () => {
@@ -120,4 +121,59 @@ function hanlde_retry_btn(frm) {
         });
         d.show();
     });
+}
+
+function handle_fetch_warehouses_btn(frm) {
+    if (!frm.doc.__islocal && frm.doc.is_active) {
+        frm.add_custom_button(__('Fetch Warehouses'), () => {
+            frappe.confirm(
+                __('Are you sure you want to fetch warehouses from Amazon? This will create warehouses in ERPNext if they do not already exist.'),
+                () => {
+                    // User confirmed
+                    frappe.call({
+                        method: 'fetch_warehouses',
+                        doc: frm.doc,
+                        freeze: true,
+                        freeze_message: __('Fetching warehouses from Amazon...'),
+                        callback: (r) => {
+                            if (r && r.message) {
+                                const result = r.message;
+                                let message = result.message || __('Warehouses fetched successfully.');
+                                
+                                if (result.created > 0 || result.skipped > 0) {
+                                    let details = [];
+                                    if (result.created > 0) {
+                                        details.push(__('{0} warehouse(s) created', [result.created]));
+                                    }
+                                    if (result.skipped > 0) {
+                                        details.push(__('{0} warehouse(s) already exist', [result.skipped]));
+                                    }
+                                    if (result.errors > 0) {
+                                        details.push(__('{0} error(s) occurred', [result.errors]));
+                                    }
+                                    message = details.join('. ') + '.';
+                                }
+                                
+                                frappe.show_alert({
+                                    message: message,
+                                    indicator: result.status === 'success' ? 'green' : 'orange'
+                                }, 5);
+                                
+                                // Reload the form to refresh any warehouse-related fields
+                                frm.reload_doc();
+                            } else {
+                                frappe.show_alert({
+                                    message: __('Failed to fetch warehouses. Please check the error log.'),
+                                    indicator: 'red'
+                                }, 5);
+                            }
+                        }
+                    });
+                },
+                () => {
+                    // User cancelled
+                }
+            );
+        });
+    }
 }

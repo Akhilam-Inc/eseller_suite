@@ -6,6 +6,8 @@
  "engine": "InnoDB",
  "field_order": [
   "is_active",
+  "column_break_v1j0c",
+  "enable_log",
   "section_break_4",
   "client_id",
   "client_secret",
@@ -24,6 +26,7 @@
   "customer_group",
   "territory",
   "customer_type",
+  "amazon_customer",
   "market_place_account_group",
   "mfn_postage_fee_account_head",
   "section_break_3",
@@ -38,7 +41,8 @@
   "is_old_data_migrated",
   "map_state_data",
   "adjust_stock_for_returns",
-  "return_invoice_stock_adjustment_before"
+  "return_invoice_stock_adjustment_before",
+  "enable_sales_order_creation"
  ],
  "fields": [
   {
@@ -268,10 +272,32 @@
    "label": "MFN Postage Fee Account Head",
    "options": "Account",
    "reqd": 1
-  }
- ],
+  },
+  {
+   "fieldname": "column_break_v1j0c",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "fieldname": "enable_log",
+   "fieldtype": "Check",
+   "label": "Enable Log"
+  },
+  {
+  "fieldname": "amazon_customer",
+  "fieldtype": "Link",
+  "label": "Amazon Customer",
+  "options": "Customer"
+ },
+ {
+  "default": "1",
+  "fieldname": "enable_sales_order_creation",
+  "fieldtype": "Check",
+  "label": "Enable Sales Order Creation"
+ }
+],
  "links": [],
- "modified": "2025-05-28 11:37:39.301083",
+ "modified": "2025-12-22 11:09:58.622357",
  "modified_by": "Administrator",
  "module": "eSeller Suite",
  "name": "Amazon SP API Settings",
@@ -288,7 +314,6 @@
    "write": 1
   }
  ],
- "row_format": "Dynamic",
  "sort_field": "modified",
  "sort_order": "DESC",
  "states": [],

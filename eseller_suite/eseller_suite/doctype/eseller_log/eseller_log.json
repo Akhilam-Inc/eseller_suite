@@ -1,0 +1,111 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "ESL-.MM.-.DD.-.####",
+ "creation": "2025-12-09 01:51:54.290476",
+ "default_view": "List",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "api_method",
+  "header",
+  "message",
+  "column_break_quwvx",
+  "api_url",
+  "reference_doctype",
+  "reference_docname",
+  "status_code",
+  "section_break_nu2tc",
+  "payload",
+  "response"
+ ],
+ "fields": [
+  {
+   "fieldname": "api_method",
+   "fieldtype": "Data",
+   "label": "API Method",
+   "read_only": 1
+  },
+  {
+   "fieldname": "header",
+   "fieldtype": "Code",
+   "label": "Header",
+   "read_only": 1
+  },
+  {
+   "fieldname": "message",
+   "fieldtype": "Code",
+   "label": "Message",
+   "read_only": 1
+  },
+  {
+   "fieldname": "column_break_quwvx",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "api_url",
+   "fieldtype": "Code",
+   "label": "API URL",
+   "read_only": 1
+  },
+  {
+   "fieldname": "reference_doctype",
+   "fieldtype": "Data",
+   "label": "Reference Doctype",
+   "read_only": 1
+  },
+  {
+   "fieldname": "reference_docname",
+   "fieldtype": "Data",
+   "label": "Reference Docname",
+   "read_only": 1
+  },
+  {
+   "fieldname": "status_code",
+   "fieldtype": "Data",
+   "label": "Status Code",
+   "read_only": 1
+  },
+  {
+   "fieldname": "section_break_nu2tc",
+   "fieldtype": "Section Break"
+  },
+  {
+   "fieldname": "payload",
+   "fieldtype": "Code",
+   "label": "Payload",
+   "read_only": 1
+  },
+  {
+   "fieldname": "response",
+   "fieldtype": "Code",
+   "label": "Response",
+   "read_only": 1
+  }
+ ],
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2025-12-10 14:26:15.567203",
+ "modified_by": "Administrator",
+ "module": "eSeller Suite",
+ "name": "eSeller Log",
+ "naming_rule": "Expression (old style)",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 1
+}

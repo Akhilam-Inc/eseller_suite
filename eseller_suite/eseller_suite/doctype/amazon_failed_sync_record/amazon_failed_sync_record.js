@@ -52,16 +52,30 @@ function retry_fetching(frm) {
             freeze_message: __("Syncing Sales Order.."),
             callback: (r) => {
                 if (r && r.message) {
-                    frappe.show_alert({
-                        message: __('Sales Orders created/updated successfully'),
-                        indicator: 'green'
-                    }, 5);
+                    // Check if record was deleted (success case)
+                    if (r.message.success) {
+                        frappe.show_alert({
+                            message: r.message.message || __('Order/Invoice created successfully. Failed sync record deleted.'),
+                            indicator: 'green'
+                        }, 5);
+                        // Redirect to list view since record is deleted
+                        setTimeout(() => {
+                            frappe.set_route("List", "Amazon Failed Sync Record");
+                        }, 1000);
+                    } else {
+                        frappe.show_alert({
+                            message: __('Sales Orders created/updated successfully'),
+                            indicator: 'green'
+                        }, 5);
+                        frm.reload_doc();
+                    }
                 }
                 else {
                     frappe.show_alert({
                         message: __('Failed to create/update Sales Order. Please check Amazon Failed Sync Record'),
                         indicator: 'red'
                     }, 5);
+                    frm.reload_doc();
                 }
             }
         });
